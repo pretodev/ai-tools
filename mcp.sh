@@ -27,14 +27,19 @@ mcp_file_for() {
   if [[ "$global" == "true" ]]; then
     case "$platform" in
       claude)   echo "${HOME}/.claude.json" ;;
-      opencode) echo "${HOME}/.config/opencode/config.json" ;;
-      copilot)  echo "${HOME}/.config/github-copilot/mcp.json" ;;
+      opencode) echo "${HOME}/.config/opencode/opencode.json" ;;
+      copilot)
+        case "$(uname -s)" in
+          Darwin) echo "${HOME}/Library/Application Support/Code/User/mcp.json" ;;
+          *)      echo "${HOME}/.config/Code/User/mcp.json" ;;
+        esac
+        ;;
       *) echo "Error: unknown platform '$platform' (supported: claude, opencode, copilot)" >&2; exit 1 ;;
     esac
   else
     case "$platform" in
       claude)   echo "$(pwd)/.mcp.json" ;;
-      opencode) echo "$(pwd)/.opencode/config.json" ;;
+      opencode) echo "$(pwd)/opencode.json" ;;
       copilot)  echo "$(pwd)/.vscode/mcp.json" ;;
       *) echo "Error: unknown platform '$platform' (supported: claude, opencode, copilot)" >&2; exit 1 ;;
     esac
@@ -63,12 +68,25 @@ configure_mcp() {
 
   mkdir -p "$(dirname "$dest_file")"
 
-  python3 - "$tmp_source" "$dest_file" <<'PYEOF'
+  # Platform-specific destination key:
+  #   claude   -> mcpServers  (.mcp.json / ~/.claude.json)
+  #   opencode -> mcp         (opencode.json)
+  #   copilot  -> servers     (.vscode/mcp.json)
+  # Source files always use "mcpServers" as the key.
+  python3 - "$tmp_source" "$dest_file" "$platform" <<'PYEOF'
 import json
 import sys
 
 source_path = sys.argv[1]
 dest_path   = sys.argv[2]
+platform    = sys.argv[3]
+
+PLATFORM_KEYS = {
+    "claude":   "mcpServers",
+    "opencode": "mcp",
+    "copilot":  "servers",
+}
+dest_key = PLATFORM_KEYS.get(platform, "mcpServers")
 
 with open(source_path) as f:
     source = json.load(f)
@@ -79,8 +97,8 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     dest = {}
 
-dest.setdefault("mcpServers", {})
-dest["mcpServers"].update(source.get("mcpServers", {}))
+dest.setdefault(dest_key, {})
+dest[dest_key].update(source.get("mcpServers", {}))
 
 with open(dest_path, "w") as f:
     json.dump(dest, f, indent=2)
