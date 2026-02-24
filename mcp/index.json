@@ -10,14 +10,6 @@
       "headers": {
         "CONTEXT7_API_KEY": "${env:CONTEXT7_API_KEY}"
       }
-    },
-    "azure-devops": {
-      "command": "npx",
-      "args": ["-y", "@azure/mcp@latest", "server", "start"],
-      "env": {
-        "AZURE_DEVOPS_ORG": "${env:AZURE_DEVOPS_ORG}",
-        "AZURE_DEVOPS_PAT": "${env:AZURE_DEVOPS_PAT}"
-      }
     }
   }
 }

@@ -3,6 +3,7 @@ param(
     [Parameter(Position = 0)]
     [string]$ConfigName = "index",
     [string]$Platforms = "claude",
+    [string[]]$Env = @(),
     [switch]$Global,
     [switch]$Help
 )
@@ -11,12 +12,14 @@ $ErrorActionPreference = "Stop"
 $REPO_RAW = "https://raw.githubusercontent.com/pretodev/ai-tools/main"
 
 if ($Help) {
-    Write-Host "Usage: mcp.ps1 [<config-name>] [-Platforms <platform,...>] [-Global]"
+    Write-Host "Usage: mcp.ps1 [<config-name>] [-Platforms <platform,...>] [-Env KEY=VALUE ...] [-Global]"
     Write-Host ""
     Write-Host "Platforms: claude (default), opencode, copilot"
     Write-Host ""
     Write-Host "  <config-name>  MCP config to use (default: index). Maps to mcp/<name>.json"
     Write-Host "  -Global        Configure globally (~/ paths). Default: configure in current directory."
+    Write-Host "  -Env KEY=VALUE Resolve `${env:KEY} placeholders with VALUE (can be repeated)."
+    Write-Host "                 Falls back to terminal environment variables."
     Write-Host ""
     Write-Host "Examples:"
     Write-Host "  & ([scriptblock]::Create((irm '$REPO_RAW/mcp.ps1')))"
@@ -24,6 +27,7 @@ if ($Help) {
     Write-Host "  & ([scriptblock]::Create((irm '$REPO_RAW/mcp.ps1'))) fvm"
     Write-Host "  & ([scriptblock]::Create((irm '$REPO_RAW/mcp.ps1'))) fvm -Global"
     Write-Host "  & ([scriptblock]::Create((irm '$REPO_RAW/mcp.ps1'))) -Platforms claude,opencode,copilot -Global"
+    Write-Host "  & ([scriptblock]::Create((irm '$REPO_RAW/mcp.ps1'))) azure_devops -Env AZURE_DEVOPS_ORG=myorg -Env AZURE_DEVOPS_PAT=mytoken"
     exit 0
 }
 
@@ -59,6 +63,41 @@ function Get-McpFile {
     }
 }
 
+# Recursively resolves ${env:VAR_NAME} placeholders in all string values.
+# -EnvOverrides takes precedence over terminal environment variables.
+# Resolved values are written as literals (not as variable references).
+function Resolve-EnvPlaceholders {
+    param([object]$Obj, [hashtable]$EnvOverrides)
+
+    if ($null -eq $Obj) { return $Obj }
+
+    if ($Obj -is [string]) {
+        return [regex]::Replace($Obj, '\$\{env:([^}]+)\}', {
+            param([System.Text.RegularExpressions.Match]$match)
+            $varName = $match.Groups[1].Value
+            if ($EnvOverrides.ContainsKey($varName)) { return $EnvOverrides[$varName] }
+            $envVal = [System.Environment]::GetEnvironmentVariable($varName)
+            if ($null -ne $envVal) { return $envVal }
+            return $match.Value
+        })
+    }
+
+    if ($Obj -is [PSCustomObject]) {
+        $result = [PSCustomObject]@{}
+        foreach ($prop in $Obj.PSObject.Properties) {
+            $resolved = Resolve-EnvPlaceholders -Obj $prop.Value -EnvOverrides $EnvOverrides
+            $result | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $resolved
+        }
+        return $result
+    }
+
+    if ($Obj -is [System.Collections.IEnumerable]) {
+        return @($Obj | ForEach-Object { Resolve-EnvPlaceholders -Obj $_ -EnvOverrides $EnvOverrides })
+    }
+
+    return $Obj
+}
+
 # Merges mcpServers from $SourceFile into the platform-specific key in $DestFile.
 # Source files always use "mcpServers" as the key.
 # Platform-specific destination keys:
@@ -66,7 +105,7 @@ function Get-McpFile {
 #   opencode -> mcp
 #   copilot  -> servers
 function Merge-McpJson {
-    param([string]$SourceFile, [string]$DestFile, [string]$Platform)
+    param([string]$SourceFile, [string]$DestFile, [string]$Platform, [hashtable]$EnvOverrides = @{})
 
     $platformKeys = @{
         "claude"   = "mcpServers"
@@ -91,8 +130,8 @@ function Merge-McpJson {
         $dest | Add-Member -MemberType NoteProperty -Name $destKey -Value ([PSCustomObject]@{})
     }
 
-    # Merge source mcpServers into dest's platform key
-    $sourceServers = $source.mcpServers
+    # Resolve ${env:VAR_NAME} placeholders, then merge into dest's platform key
+    $sourceServers = Resolve-EnvPlaceholders -Obj $source.mcpServers -EnvOverrides $EnvOverrides
     if ($null -ne $sourceServers) {
         foreach ($prop in $sourceServers.PSObject.Properties) {
             $dest.$destKey | Add-Member -MemberType NoteProperty -Name $prop.Name -Value $prop.Value -Force
@@ -107,6 +146,14 @@ function Merge-McpJson {
 if ($ConfigName -notmatch '^[a-zA-Z0-9_-]+$') {
     Write-Host "Error: invalid config name '$ConfigName'" -ForegroundColor Red
     exit 1
+}
+
+# Parse -Env KEY=VALUE pairs into a hashtable
+$envOverrides = @{}
+foreach ($envPair in $Env) {
+    if ($envPair -match '^([^=]+)=(.*)$') {
+        $envOverrides[$Matches[1]] = $Matches[2]
+    }
 }
 
 foreach ($platform in ($Platforms -split ',')) {
@@ -125,7 +172,7 @@ foreach ($platform in ($Platforms -split ',')) {
     }
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destFile) | Out-Null
-    Merge-McpJson -SourceFile $tmpFile -DestFile $destFile -Platform $p
+    Merge-McpJson -SourceFile $tmpFile -DestFile $destFile -Platform $p -EnvOverrides $envOverrides
     Remove-Item $tmpFile -ErrorAction SilentlyContinue
 
     Write-Host "$action [$p]: $destFile"

@@ -4,12 +4,14 @@ set -euo pipefail
 REPO_RAW="https://raw.githubusercontent.com/pretodev/ai-tools/main"
 
 usage() {
-  echo "Usage: mcp.sh [<config-name>] [--platforms <platform,...>] [--global]" >&2
+  echo "Usage: mcp.sh [<config-name>] [--platforms <platform,...>] [--global] [--env KEY=VALUE ...]" >&2
   echo "" >&2
   echo "Platforms: claude (default), opencode, copilot" >&2
   echo "" >&2
   echo "  <config-name>  MCP config to use (default: index). Maps to mcp/<name>.json" >&2
   echo "  --global       Configure globally (~/ paths). Default: configure in current directory." >&2
+  echo "  --env KEY=VALUE  Resolve \${env:KEY} placeholders with VALUE (can be repeated)." >&2
+  echo "                   Falls back to terminal environment variables." >&2
   echo "" >&2
   echo "Examples:" >&2
   echo "  bash <(curl -fsSL ${REPO_RAW}/mcp.sh)" >&2
@@ -17,6 +19,7 @@ usage() {
   echo "  bash <(curl -fsSL ${REPO_RAW}/mcp.sh) fvm" >&2
   echo "  bash <(curl -fsSL ${REPO_RAW}/mcp.sh) fvm --global" >&2
   echo "  bash <(curl -fsSL ${REPO_RAW}/mcp.sh) --platforms claude,opencode,copilot --global" >&2
+  echo "  bash <(curl -fsSL ${REPO_RAW}/mcp.sh) azure_devops --env AZURE_DEVOPS_ORG=myorg --env AZURE_DEVOPS_PAT=mytoken" >&2
   exit 1
 }
 
@@ -50,6 +53,9 @@ configure_mcp() {
   local config_name="$1"
   local platform="$2"
   local global="$3"
+  shift 3
+  local env_args=("$@")  # KEY=VALUE pairs for placeholder resolution
+
   local source_url="${REPO_RAW}/mcp/${config_name}.json"
   local dest_file
   dest_file="$(mcp_file_for "$platform" "$global")"
@@ -73,13 +79,18 @@ configure_mcp() {
   #   opencode -> mcp         (opencode.json)
   #   copilot  -> servers     (.vscode/mcp.json)
   # Source files always use "mcpServers" as the key.
-  python3 - "$tmp_source" "$dest_file" "$platform" <<'PYEOF'
+  # ${env:VAR_NAME} placeholders are resolved from --env args or terminal environment.
+  # Resolved values are written as literals (not as variable references).
+  python3 - "$tmp_source" "$dest_file" "$platform" "${env_args[@]}" <<'PYEOF'
 import json
 import sys
+import os
+import re
 
 source_path = sys.argv[1]
 dest_path   = sys.argv[2]
 platform    = sys.argv[3]
+env_pairs   = sys.argv[4:]
 
 PLATFORM_KEYS = {
     "claude":   "mcpServers",
@@ -87,6 +98,32 @@ PLATFORM_KEYS = {
     "copilot":  "servers",
 }
 dest_key = PLATFORM_KEYS.get(platform, "mcpServers")
+
+# Build env overrides from KEY=VALUE args (take precedence over terminal env)
+env_overrides = {}
+for pair in env_pairs:
+    if '=' in pair:
+        k, v = pair.split('=', 1)
+        env_overrides[k] = v
+
+def resolve_env(value):
+    if not isinstance(value, str):
+        return value
+    def replacer(m):
+        var_name = m.group(1)
+        if var_name in env_overrides:
+            return env_overrides[var_name]
+        return os.environ.get(var_name, m.group(0))
+    return re.sub(r'\$\{env:([^}]+)\}', replacer, value)
+
+def resolve_all(obj):
+    if isinstance(obj, dict):
+        return {k: resolve_all(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [resolve_all(v) for v in obj]
+    if isinstance(obj, str):
+        return resolve_env(obj)
+    return obj
 
 with open(source_path) as f:
     source = json.load(f)
@@ -98,7 +135,7 @@ except (FileNotFoundError, json.JSONDecodeError):
     dest = {}
 
 dest.setdefault(dest_key, {})
-dest[dest_key].update(source.get("mcpServers", {}))
+dest[dest_key].update(resolve_all(source.get("mcpServers", {})))
 
 with open(dest_path, "w") as f:
     json.dump(dest, f, indent=2)
@@ -112,11 +149,13 @@ CONFIG_NAME="index"
 PLATFORMS="claude"
 GLOBAL="false"
 CONFIG_NAME_SET="false"
+ENV_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --platforms) PLATFORMS="${2:-}"; shift 2 ;;
     --global)    GLOBAL="true"; shift ;;
+    --env)       ENV_ARGS+=("${2:-}"); shift 2 ;;
     --help)      usage ;;
     --*)         echo "Error: unknown option '$1'" >&2; exit 1 ;;
     *)
@@ -139,5 +178,5 @@ fi
 
 IFS=',' read -ra PLATFORM_LIST <<< "$PLATFORMS"
 for platform in "${PLATFORM_LIST[@]}"; do
-  configure_mcp "$CONFIG_NAME" "$platform" "$GLOBAL"
+  configure_mcp "$CONFIG_NAME" "$platform" "$GLOBAL" "${ENV_ARGS[@]}"
 done
