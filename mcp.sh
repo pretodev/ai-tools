@@ -134,8 +134,28 @@ try:
 except (FileNotFoundError, json.JSONDecodeError):
     dest = {}
 
+def to_opencode_entry(entry):
+    if 'command' in entry:
+        cmd = entry['command']
+        args = entry.get('args', [])
+        env = entry.get('env', {})
+        result = {'type': 'local', 'command': [cmd] + args}
+        if env:
+            result['environment'] = env
+        return result
+    elif 'url' in entry:
+        result = {'type': 'remote', 'url': entry['url']}
+        if 'headers' in entry:
+            result['headers'] = entry['headers']
+        return result
+    return entry
+
+servers = resolve_all(source.get("mcpServers", {}))
+if platform == "opencode":
+    servers = {k: to_opencode_entry(v) for k, v in servers.items()}
+
 dest.setdefault(dest_key, {})
-dest[dest_key].update(resolve_all(source.get("mcpServers", {})))
+dest[dest_key].update(servers)
 
 with open(dest_path, "w") as f:
     json.dump(dest, f, indent=2)

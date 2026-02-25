@@ -313,8 +313,27 @@ try:
     with open(dst) as f: dest = json.load(f)
 except (FileNotFoundError, json.JSONDecodeError): dest = {}
 
+def to_opencode_entry(entry):
+    if 'command' in entry:
+        cmd = entry['command']
+        args = entry.get('args', [])
+        env = entry.get('env', {})
+        result = {'type': 'local', 'command': [cmd] + args}
+        if env:
+            result['environment'] = env
+        return result
+    elif 'url' in entry:
+        result = {'type': 'remote', 'url': entry['url']}
+        if 'headers' in entry:
+            result['headers'] = entry['headers']
+        return result
+    return entry
+
+servers = deep(source.get("mcpServers", {}))
+if plat == "opencode":
+    servers = {k: to_opencode_entry(v) for k, v in servers.items()}
 dest.setdefault(dk, {})
-dest[dk].update(deep(source.get("mcpServers", {})))
+dest[dk].update(servers)
 
 with open(dst, "w") as f:
     json.dump(dest, f, indent=2)
