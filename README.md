@@ -2,6 +2,26 @@
 
 Skills and MCP configurations for AI coding agents — compatible with **Claude Code**, **GitHub Copilot**, and **OpenCode**.
 
+## Interactive setup (recommended)
+
+Run the wizard and answer a few questions — no flags to memorize:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pretodev/ai-tools/main/ai-tools.sh | bash
+```
+
+> `bash <(curl -fsSL ...)` also works if you prefer process substitution.
+
+The wizard will guide you through:
+
+1. **Environment** — global (`~/`) or local (current directory)
+2. **Platforms** — Claude Code, OpenCode, GitHub Copilot (one or more)
+3. **Skills** — pick which skills to install
+4. **MCP servers** — pick which MCP configs to add (collects any required API keys)
+5. **Confirmation** — review the summary before applying
+
+---
+
 ## Install a skill
 
 **macOS / Linux**
